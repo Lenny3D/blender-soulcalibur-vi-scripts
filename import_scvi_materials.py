@@ -13,6 +13,7 @@ import bpy
 
 CHARA_MAT_RE = re.compile('[a-zA-Z]+_R0?([0-9]+)_[a-zA-Z0-9]+')
 CHARA_DLC_MAP = {
+    # Character number: DLC number
     60: 1,  # 2B?
     30: 4,  # Cassandra?
     17: 6,  # Amy?
@@ -192,20 +193,107 @@ def register() -> None:
 ###########################################################################################
 
 def get_creation_mask_node(forceCreate: bool = False) -> bpy.types.ShaderNodeGroup:
-    if not forceCreate or "CREATION_MASK" in bpy.data.node_groups:
-        return bpy.data.node_groups["CREATION_MASK"]
-    
+    if "CREATION_MASK" in bpy.data.node_groups:
+        if forceCreate:
+            bpy.data.node_groups.remove(bpy.data.node_groups["CREATION_MASK"])
+        else:
+            return bpy.data.node_groups["CREATION_MASK"]
     
     node_tree = bpy.data.node_groups.new(name = "CREATION_MASK", type = "ShaderNodeTree")
-    node_tree.clear()
     nodes = node_tree.nodes
+    nodes.clear()
     
     # Inputs/outputs
-    return nodes
+    group_input = nodes.new("NodeGroupInput")
+    group_input.location = (-3000, 0)
+    group_output = nodes.new("NodeGroupOutput")
+    group_output.location = (300, 0)
+    
+    node_tree.inputs.clear()
+    node_tree.outputs.clear()
+    
+    base_color_input = node_tree.inputs.new("NodeSocketColor", "Base Color")
+    creation_mask_input = node_tree.inputs.new("NodeSocketColor", "Creation Mask")
+    creation_mask_input = node_tree.inputs.new("NodeSocketFloat", "Creation Mask Alpha")
+    creation_color1_input = node_tree.inputs.new("NodeSocketColor", "Color 1")
+    creation_color2_input = node_tree.inputs.new("NodeSocketColor", "Color 2")
+    creation_color3_input = node_tree.inputs.new("NodeSocketColor", "Color 3")
+    creation_color4_input = node_tree.inputs.new("NodeSocketColor", "Color 4")
+    
+    color_output = node_tree.outputs.new("NodeSocketColor", "Color")
+    
+    # Nodes
+    creation_mask_split_node = nodes.new("ShaderNodeSeparateRGB")
+    node_tree.links.new(group_input.outputs["Creation Mask"], creation_mask_split_node.inputs["Image"])
+    creation_mask_split_node.location = (-2500, 150)
+    
+    prev_color_node = group_input
+    
+    for i in range(4):
+        math_node = nodes.new("ShaderNodeMath")
+        math_node.location = (-2000 + 500 * i, 300 )
+        math_node.operation = "MULTIPLY"
+        
+        mul_node = nodes.new("ShaderNodeMixRGB")
+        mul_node.location =  (-2000 + 500 * i, -300 )
+        mul_node.blend_type = "MULTIPLY"
+        mul_node.inputs["Fac"].default_value = 1.0
+        
+        mix_node = nodes.new("ShaderNodeMixRGB")
+        mix_node.location =  (-1500 + 500 * i, 0 )
+        #if "IsSkin" in p.properties and p.properties["IsSkin"] != 0.0:
+        mix_node.blend_type = "MIX"
+        
+        node_tree.links.new(group_input.outputs["Base Color"], mul_node.inputs["Color1"])
+        node_tree.links.new(group_input.outputs["Color {0}".format(i + 1)], mul_node.inputs["Color2"])
+        node_tree.links.new(group_input.outputs["Creation Mask Alpha"], math_node.inputs[1])
+        node_tree.links.new(math_node.outputs[0], mix_node.inputs["Fac"])
+        
+        color_output_name = "Color"
+        if prev_color_node == group_input:
+            color_output_name = "Base Color"
+            
+        node_tree.links.new(prev_color_node.outputs[color_output_name], mix_node.inputs["Color1"])
+        node_tree.links.new(mul_node.outputs["Color"], mix_node.inputs["Color2"])
+        
+        if i == 0:
+            # Colour 1 replaces red
+            node_tree.links.new(creation_mask_split_node.outputs["R"], math_node.inputs[0])
+        elif i == 3:
+            # Colour 2 replaces black
+            node_tree.links.new(creation_mask_split_node.outputs["B"], math_node.inputs[0])
+        elif i == 2:
+            # Colour 3 replaces green
+            node_tree.links.new(creation_mask_split_node.outputs["G"], math_node.inputs[0])
+        elif i == 1:
+            # Colour 4 replaces blue
+            
+            # Determine if something is black by checking if every element is 0
+            length_node = nodes.new("ShaderNodeVectorMath")
+            length_node.location = (-2500 + 500 * i, 500 )
+            length_node.operation = "LENGTH"
+            
+            cmp_node = nodes.new("ShaderNodeMath")
+            cmp_node.location = (-2250 + 500 * i, 500 )
+            cmp_node.operation = "COMPARE"
+            cmp_node.inputs[1].default_value = 0.0
+            
+            node_tree.links.new(group_input.outputs["Creation Mask"], length_node.inputs["Vector"])
+            node_tree.links.new(length_node.outputs["Value"], cmp_node.inputs[0])
+            node_tree.links.new(cmp_node.outputs[0], math_node.inputs[0])
+        
+        prev_color_node = mix_node
+            
+    node_tree.links.new(prev_color_node.outputs["Color"], group_output.inputs["Color"])
+    
+    return node_tree
     
 
 def setup_materials():
     r: ResourceResolver = ResourceResolver()
+    
+    # Fore the recreation
+    get_creation_mask_node(True)
     
     def create_texture_node(prop: Property) -> bpy.types.ShaderNodeTexImage:
         node = nodes.new("ShaderNodeTexImage")
@@ -248,76 +336,28 @@ def setup_materials():
                 mat.node_tree.links.new(base_color_node.outputs["Alpha"], bsdf_node.inputs["Alpha"])
                 if "CreationMask" in p.properties:
                     # Creates a group of nodes that replaces the color of the mask with another color
-                    base_color_node.location = (-4000, -300)
-                    creation_mask_node = create_texture_node(p.properties["CreationMask"])
-                    creation_mask_node.label = "Creation Mask"
-                    creation_mask_node.location = (-4000, 0)
+                    base_color_node.location = (-1000, -300)
+                    creation_mask_texture_node = create_texture_node(p.properties["CreationMask"])
+                    creation_mask_texture_node.label = "Creation Mask"
+                    creation_mask_texture_node.location = (-1000, 0)
                     
-                    creation_mask_split_node = nodes.new("ShaderNodeSeparateRGB")
-                    mat.node_tree.links.new(creation_mask_node.outputs["Color"], creation_mask_split_node.inputs["Image"])
-                    creation_mask_split_node.location = (-3500, 0)
+                    creation_mask_node = nodes.new("ShaderNodeGroup")
+                    creation_mask_node.location = (-500, 0)
+                    creation_mask_node.node_tree = get_creation_mask_node()
+                    
+                    mat.node_tree.links.new(base_color_node.outputs["Color"], creation_mask_node.inputs["Base Color"])
+                    mat.node_tree.links.new(creation_mask_texture_node.outputs["Color"], creation_mask_node.inputs["Creation Mask"])
+                    mat.node_tree.links.new(creation_mask_texture_node.outputs["Alpha"], creation_mask_node.inputs["Creation Mask Alpha"])
                     
                     creation_valid_mask = p.properties["CreationValidMask"].value
-                    prev_color_node = base_color_node
                     
                     for i, valid in enumerate(creation_valid_mask):
                         if valid != 0.0:
-                            color_node = nodes.new("ShaderNodeRGB")
-                            color_node.location =  (-3500 + 500 * i, -600 )
-                            color_node.label = "Creation color {0}".format(i + 1)
                             color = p.properties["CreationColor{0}".format(i + 1)].value
-                            color_node.outputs["Color"].default_value = color
-                            
-                            math_node = nodes.new("ShaderNodeMath")
-                            math_node.location = (-3000 + 500 * i, 300 )
-                            math_node.operation = "MULTIPLY"
-                            
-                            mul_node = nodes.new("ShaderNodeMixRGB")
-                            mul_node.location =  (-3000 + 500 * i, -300 )
-                            mul_node.blend_type = "MULTIPLY"
-                            mul_node.inputs["Fac"].default_value = 1.0
-                            
-                            mix_node = nodes.new("ShaderNodeMixRGB")
-                            mix_node.location =  (-2500 + 500 * i, 0 )
-                            #if "IsSkin" in p.properties and p.properties["IsSkin"] != 0.0:
-                            mix_node.blend_type = "MIX"
-                            
-                            mat.node_tree.links.new(base_color_node.outputs["Color"], mul_node.inputs["Color1"])
-                            mat.node_tree.links.new(color_node.outputs[0], mul_node.inputs["Color2"])
-                            mat.node_tree.links.new(creation_mask_node.outputs["Alpha"], math_node.inputs[1])
-                            mat.node_tree.links.new(math_node.outputs[0], mix_node.inputs["Fac"])
-                            mat.node_tree.links.new(prev_color_node.outputs["Color"], mix_node.inputs["Color1"])
-                            mat.node_tree.links.new(mul_node.outputs["Color"], mix_node.inputs["Color2"])
-                            
-                            if i == 0:
-                                # Colour 1 replaces the red channel
-                                mat.node_tree.links.new(creation_mask_split_node.outputs["R"], math_node.inputs[0])
-                            elif i == 3:
-                                # Colour 2 replaces the blue channel
-                                mat.node_tree.links.new(creation_mask_split_node.outputs["B"], math_node.inputs[0])
-                            elif i == 2:
-                                # Colour 3 replaces the green channel
-                                mat.node_tree.links.new(creation_mask_split_node.outputs["G"], math_node.inputs[0])
-                            elif i == 1:
-                                # Colour 4 replaces black
-                                
-                                # Determine if something is black by checking if every element is 0
-                                length_node = nodes.new("ShaderNodeVectorMath")
-                                length_node.location = (-3500 + 500 * i, 500 )
-                                length_node.operation = "LENGTH"
-                                
-                                cmp_node = nodes.new("ShaderNodeMath")
-                                cmp_node.location = (-3250 + 500 * i, 500 )
-                                cmp_node.operation = "COMPARE"
-                                cmp_node.inputs[1].default_value = 0.0
-                                
-                                mat.node_tree.links.new(creation_mask_node.outputs["Color"], length_node.inputs["Vector"])
-                                mat.node_tree.links.new(length_node.outputs["Value"], cmp_node.inputs[0])
-                                mat.node_tree.links.new(cmp_node.outputs[0], math_node.inputs[0])
-                            
-                            prev_color_node = mix_node
-                            
-                    mat.node_tree.links.new(prev_color_node.outputs["Color"], bsdf_node.inputs["Base Color"])
+                            creation_mask_node.inputs["Color {0}".format(i + 1)].default_value = color
+                           
+                    
+                    mat.node_tree.links.new(creation_mask_node.outputs["Color"], bsdf_node.inputs["Base Color"])
                 else:
                     # If there is no creation mask, connect it directly to the bsdf node
                     base_color_node.location = (-1000, 0)
