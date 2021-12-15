@@ -300,6 +300,22 @@ def setup_materials():
         img_path = r.resolveResourcePath(prop.propertyType, prop.value)
         node.image = bpy.data.images.load(bytes(img_path), check_existing=True)
         return node
+    
+    def add_remap_nodes(propertyName: str, outputSocket, inputSocket, nodeLocation) -> None:
+        if "SpecularMin" in p.properties or "SpecularMax" in p.properties:
+            prop_min = p.properties["{0}Min".format(propertyName)].value if "{0}Min".format(propertyName) in p.properties else 0.0
+            prop_max = p.properties["{0}Max".format(propertyName)].value if "{0}Max".format(propertyName) in p.properties else 1.0 
+            
+            remap_node = nodes.new("ShaderNodeMapRange")
+            remap_node.location = nodeLocation
+            remap_node.label = "Remap {0} values".format(propertyName)
+            remap_node.inputs["To Min"].default_value = prop_min
+            remap_node.inputs["To Max"].default_value = prop_max
+            
+            mat.node_tree.links.new(outputSocket, remap_node.inputs["Value"])
+            mat.node_tree.links.new(remap_node.outputs["Result"], inputSocket)
+        else:
+            mat.node_tree.links.new(outputSocket, inputSocket)
         
     
     for name, mat in bpy.data.materials.items():
@@ -336,13 +352,13 @@ def setup_materials():
                 mat.node_tree.links.new(base_color_node.outputs["Alpha"], bsdf_node.inputs["Alpha"])
                 if "CreationMask" in p.properties:
                     # Creates a group of nodes that replaces the color of the mask with another color
-                    base_color_node.location = (-1000, -300)
+                    base_color_node.location = (-1500, -300)
                     creation_mask_texture_node = create_texture_node(p.properties["CreationMask"])
                     creation_mask_texture_node.label = "Creation Mask"
-                    creation_mask_texture_node.location = (-1000, 0)
+                    creation_mask_texture_node.location = (-1500, 0)
                     
                     creation_mask_node = nodes.new("ShaderNodeGroup")
-                    creation_mask_node.location = (-500, 0)
+                    creation_mask_node.location = (-600, 200)
                     creation_mask_node.node_tree = get_creation_mask_node()
                     
                     mat.node_tree.links.new(base_color_node.outputs["Color"], creation_mask_node.inputs["Base Color"])
@@ -357,15 +373,15 @@ def setup_materials():
                             creation_mask_node.inputs["Color {0}".format(i + 1)].default_value = color
                            
                     
-                    mat.node_tree.links.new(creation_mask_node.outputs["Color"], bsdf_node.inputs["Base Color"])
+                    base_color_link = mat.node_tree.links.new(creation_mask_node.outputs["Color"], bsdf_node.inputs["Base Color"])
                 else:
                     # If there is no creation mask, connect it directly to the bsdf node
                     base_color_node.location = (-1000, 0)
-                    mat.node_tree.links.new(base_color_node.outputs["Color"], bsdf_node.inputs["Base Color"])
+                    base_color_link = mat.node_tree.links.new(base_color_node.outputs["Color"], bsdf_node.inputs["Base Color"])
             
             if "NormalMap" in p.properties:
                 normal_map_node = create_texture_node(p.properties["NormalMap"])
-                normal_map_node.location = (-500, -500)
+                normal_map_node.location = (-500, -600)
                 mat.node_tree.links.new(normal_map_node.outputs["Color"], bsdf_node.inputs["Normal"])
                 
             if "ParameterMap" in p.properties:
@@ -375,15 +391,24 @@ def setup_materials():
                 # Blue Channel: Metalness
                 # Alpha Channel: ???
                 param_map_node = create_texture_node(p.properties["ParameterMap"])
-                param_map_node.location = (-600, -250)
+                param_map_node.location = (-900, -250)
                 param_map_split_node = nodes.new("ShaderNodeSeparateRGB")
-                param_map_split_node.location = (-250, -200)
+                param_map_split_node.location = (-600, -200)
                 
-                mat.node_tree.links.new(param_map_node.outputs["Color"],   param_map_split_node.inputs["Image"])
-                mat.node_tree.links.new(param_map_split_node.outputs["R"], bsdf_node.inputs["Specular"])
-                mat.node_tree.links.new(param_map_split_node.outputs["G"], bsdf_node.inputs["Roughness"])
+                mat.node_tree.links.new(param_map_node.outputs["Color"],   param_map_split_node.inputs["Image"]) 
+                add_remap_nodes("Specular",  param_map_split_node.outputs["R"], bsdf_node.inputs["Specular"],  (-400, -100))
+                add_remap_nodes("Roughness", param_map_split_node.outputs["G"], bsdf_node.inputs["Roughness"], (-200, -200))
                 mat.node_tree.links.new(param_map_split_node.outputs["B"], bsdf_node.inputs["Metallic"])
-                mat.node_tree.links.new(param_map_node.outputs["Alpha"],   bsdf_node.inputs["Anisotropic"])
+                
+                mix_ao_node = nodes.new("ShaderNodeMixRGB")
+                mix_ao_node.blend_type = "MULTIPLY"
+                mix_ao_node.location = (-300, 200)
+                mix_ao_node.inputs["Fac"].default_value = 1.0
+                
+                #base_color_link.to_socket = mix_ao_node.inputs["Color1"]
+                mat.node_tree.links.new(base_color_link.from_socket,   mix_ao_node.inputs["Color1"])
+                mat.node_tree.links.new(param_map_node.outputs["Alpha"],   mix_ao_node.inputs["Color2"])
+                mat.node_tree.links.new(mix_ao_node.outputs["Color"], bsdf_node.inputs["Base Color"])
                
 
 if __name__ == "__main__":
