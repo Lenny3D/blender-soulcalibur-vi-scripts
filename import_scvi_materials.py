@@ -142,33 +142,50 @@ class PropertyFile:
         data = json.loads(self.contents)
         
         for propName, propValue in data.items():
-            if propName == "Parent":
-                self.parent = self.parseProperty(data["Parent"])
-            if "ParameterValues" in propName:
-                typeName, _ = propName.split("ParameterValues")
-                
-                resType: ResourceType = ResourceType.UNKNOWN
-                
+            
+            def add_properties(typeName: str, nameKey: str, valueKey: str) -> None:
                 # Workaround for empty property values that are generated with a "{}" string
                 if type(propValue) is str and propValue == "{}":
-                    continue
-                
+                    return
                 if typeName == "Scalar":
                     for param in propValue:
-                        self.properties[param["ParameterName"]] = Property(float(param["ParameterValue"]), ResourceType.FLOAT)
+                        param_name = param[nameKey]
+                        param_value = param[valueKey]
+                        
+                        self.properties[param_name] = Property(float(param_value), ResourceType.FLOAT)
                 elif typeName == "Texture":
                     for param in propValue:
-                        self.properties[param["ParameterName"]] = self.parseProperty(param["ParameterValue"])
+                        param_name = param[nameKey]
+                        param_value = param[valueKey]
+                        
+                        self.properties[param_name] = self.parseProperty(param_value)
                 elif typeName == "Vector":
                     for param in propValue:
-                        values = param["ParameterValue"]
-                        self.properties[param["ParameterName"]] = Property([float(values["R"]), 
-                                                                            float(values["G"]),
-                                                                            float(values["B"]),
-                                                                            float(values["A"])],
-                                                                            ResourceType.VECTOR_4) 
+                        param_name = param[nameKey]
+                        param_value = param[valueKey]
+                        
+                        self.properties[param_name] = Property([float(param_value["R"]), 
+                                                                float(param_value["G"]),
+                                                                float(param_value["B"]),
+                                                                float(param_value["A"])],
+                                                               ResourceType.VECTOR_4)
                 else:
                     print("Discarded property of type {0}".format(typeName))
+            if propName == "Parent":
+                self.parent = self.parseProperty(data["Parent"])
+            elif "ParameterValues" in propName:
+                typeName, _ = propName.split("ParameterValues")
+                add_properties(typeName, "ParameterName", "ParameterValue")
+                    
+            elif propName.startswith("Collected") and propName.endswith("Parameters"):
+                # Handle CollectedXParameters
+                typeName = propName[len("Collected"):-len("Parameters")]
+                #if typeName == "Texture":
+                #    add_properties(typeName, "Name", "Texture")
+                #else:
+                #    add_properties(typeName, "Name", "Value")
+                
+
     
     def build(self) -> None:
         """Parses the file and merges it with its parents"""
@@ -185,13 +202,19 @@ class PropertyFile:
     
     def mergeWithParents(self) -> None:
         """Merges all parent properties into this file"""
+        #print(repr(self.properties))
         if self.parent:
             parent: PropertyFile = PropertyFile(self.resourceResolver.readResource(self.parent.propertyType, self.parent.value), 
                                                 self.resourceResolver)
             parent.build()
-            for propName, propValue in parent.properties.items():
-                if propName not in self.properties:
-                    self.properties[propName] = propValue
+            #print(self.parent.value))
+            for parentPropName, parentPropValue in parent.properties.items():
+                if parentPropName in self.properties:
+                    pass
+                    #print("    {0}: {1}, parent: {2} (overridden)".format(parentPropName, self.properties[parentPropName], parentPropValue))
+                else:
+                    self.properties[parentPropName] = parentPropValue
+                    #print("    {0}: {1} (inherited)".format(parentPropName, parentPropValue))
 
 def register() -> None:
     pass
@@ -429,7 +452,8 @@ def setup_materials():
             img_path = r.resolveResourcePath(ResourceType.TEXTURE_2D, prop)
         else:
             img_path = r.resolveResourcePath(prop.propertyType, prop.value)
-        node.image = bpy.data.images.load(bytes(img_path), check_existing=True)
+        if img_path is not None:
+            node.image = bpy.data.images.load(bytes(img_path), check_existing=True)
         return node
     
     def add_remap_nodes(propertyName: str, outputSocket, inputSocket, nodeLocation) -> None:
@@ -462,11 +486,13 @@ def setup_materials():
         if data:
             p: PropertyFile = PropertyFile(data, r)
             p.build()
-            print(repr(p.properties))
+            
+            # Debug: print property values of this material
+            #for propName, propValue in p.properties.items():
+                #print("    {0}: {1}".format(propName, repr(propValue)))
             
             if "Iris UV Radius" in p.properties:
                 eye_data = data
-                print("Storing eye data")
             
             mat.use_nodes = True
             nodes = mat.node_tree.nodes
@@ -497,6 +523,22 @@ def setup_materials():
                 
                 mat.node_tree.links.new(normal_tex_node.outputs["Color"], normal_map_node.inputs["Color"])
                 mat.node_tree.links.new(normal_map_node.outputs["Normal"], bsdf_node.inputs["Normal"])
+            
+            elif name.endswith("Eye"):
+                # Set up the EyeLash material
+                base_color_node = create_texture_node("FACE_eyelash_COLOR")
+                base_color_node.location = (-600, 0)
+                
+                mix_node = nodes.new("ShaderNodeMixRGB")
+                mix_node.location = (-200,0)
+                mix_node.blend_type = "MULTIPLY"
+                mix_node.inputs["Fac"].default_value = 1.0
+                mix_node.inputs["Color2"].default_value = (0, 0, 0, 0)
+                
+                mat.node_tree.links.new(base_color_node.outputs["Color"], mix_node.inputs["Color1"])
+                mat.node_tree.links.new(mix_node.outputs["Color"], bsdf_node.inputs["Base Color"])
+                mat.node_tree.links.new(base_color_node.outputs["Alpha"], bsdf_node.inputs["Alpha"])
+                
             else:
                 # Set up other materials
                 if "Anisotropy" in p.properties:
@@ -557,7 +599,11 @@ def setup_materials():
                         
                         for i, valid in enumerate(creation_valid_mask):
                             if valid != 0.0:
-                                color = p.properties["CreationColor{0}".format(i + 1)].value
+                                creation_color_prop_name = "CreationColor{0}".format(i + 1)
+                                if creation_color_prop_name in p.properties:
+                                    color = p.properties[creation_color_prop_name].value
+                                else:
+                                    color = (0, 0, 0, 1)
                                 creation_mask_node.inputs["Color {0}".format(i + 1)].default_value = color
                                
                         
@@ -602,7 +648,18 @@ def setup_materials():
                     mat.node_tree.links.new(base_color_link.from_socket,   mix_ao_node.inputs["Color1"])
                     mat.node_tree.links.new(param_map_node.outputs["Alpha"],   mix_ao_node.inputs["Color2"])
                     mat.node_tree.links.new(mix_ao_node.outputs["Color"], bsdf_node.inputs["Base Color"])
-               
-
+                
+                # Some hard-coded material fixups until the material loading is done correclty
+                if name.endswith("Eyebrow"):
+                    # Patch some mistakes on the eyebrow material
+                    creation_mask_texture_path = r.resolveResourcePath(ResourceType.TEXTURE_2D, "red_16x16")
+                    creation_mask_texture_node.image = bpy.data.images.load(bytes(creation_mask_texture_path), check_existing=True)   
+                    
+                    param_mask_texture_path = r.resolveResourcePath(ResourceType.TEXTURE_2D, "black_16x16")
+                    creation_mask_texture_node.image = bpy.data.images.load(bytes(param_mask_texture_path), check_existing=True)   
+                elif name.endswith("Tear"):
+                    base_color_texture_path = r.resolveResourcePath(ResourceType.TEXTURE_2D, "FACE_namida_COLOR")
+                    base_color_node.image = bpy.data.images.load(bytes(param_mask_texture_path), check_existing=True)
+                    
 if __name__ == "__main__":
     setup_materials()
