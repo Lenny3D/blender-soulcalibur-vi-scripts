@@ -511,7 +511,33 @@ def setup_materials():
                 if "BaseColor" in p.properties:
                     base_color_node = create_texture_node(p.properties["BaseColor"])
                     
-                    mat.node_tree.links.new(base_color_node.outputs["Alpha"], bsdf_node.inputs["Alpha"])
+                    if "OpacityMax" in p.properties and "OpacityMin" in p.properties:
+                        # Handle a custom alpha ramp if it is set
+                        opacity_max = p.properties["OpacityMax"].value
+                        opacity_min = p.properties["OpacityMin"].value
+                        
+                        opacity_ramp_node = nodes.new("ShaderNodeValToRGB")
+                        opacity_ramp_node.location = (-900, -500)
+                        
+                        opacity_ramp_node.color_ramp.elements[0].color = (1, 1, 1, 1)
+                        opacity_ramp_node.color_ramp.elements[0].alpha = opacity_min
+                        opacity_ramp_node.color_ramp.elements[1].alpha = opacity_max
+                        
+                        if "OpacityMiddle" in p.properties and "OpacityMiddlePoint" in p.properties:
+                            # Add a middle point
+                            opacity_middle       = p.properties["OpacityMiddle"].value
+                            opacity_middle_point = p.properties["OpacityMiddlePoint"].value
+                            
+                            middle_element = opacity_ramp_node.color_ramp.elements.new(opacity_middle_point)
+                            middle_element.color = (1, 1, 1, 1)
+                            middle_element.alpha = opacity_middle
+                        
+                        mat.node_tree.links.new(base_color_node.outputs["Alpha"],   opacity_ramp_node.inputs["Fac"])
+                        mat.node_tree.links.new(opacity_ramp_node.outputs["Alpha"], bsdf_node.inputs["Alpha"])
+                    else:
+                        mat.node_tree.links.new(base_color_node.outputs["Alpha"], bsdf_node.inputs["Alpha"])
+                    
+                    
                     if "CreationMask" in p.properties:
                         # Creates a group of nodes that replaces the color of the mask with another color
                         base_color_node.location = (-1500, -300)
